@@ -148,7 +148,16 @@ class PaperFilter:
             """, (paper_hash, paper.title, paper.url, paper.file_path,
                  paper.conference, paper.year, datetime.now()))
 
-    def is_relevant_paper(self, title: str, abstract: str) -> bool:
+    def clear_relevance_entry(self, title: str, abstract: str):
+        """Clear all relevance entry from cache"""
+        paper_hash = self._get_paper_hash(title, abstract)
+        with sqlite3.connect(self.cache_db) as conn:
+            conn.execute(
+                "DELETE FROM paper_cache WHERE paper_hash = ?",
+                (paper_hash,)
+            )
+
+    def is_relevant_paper(self, title: str, abstract: str, prompt: str) -> bool:
         """Check if paper is relevant using cache first, then LLM if needed"""
         is_cached, is_relevant = self.get_cached_relevance(title, abstract)
         
@@ -156,28 +165,14 @@ class PaperFilter:
             logger.debug(f"Using cached relevance for: {title}")
             return is_relevant
 
-        prompt = f"""Based on the following paper title and abstract, determine if it's primarily related to the chosen (allowed) topics:
-- **Allowed Topics**: Information Retrieval systems and techniques, Large Language models (architecture, training, evaluation), Language Generation, 
-                    RLHF (Reinforcement Learning from Human Feedback), Machine Learning, ML for NLP, Information Theory
-- **Blacklisted Topics**: Dialogue Systems, Conversational AI, Machine Translation, Societal/Cultural Impact Papers, Ethical considerations in AI, 
-                        Fairness, Accountability, Transparency, and Ethics in AI, Multilingual, Speech, Multi-modality 
-- Also avoid papers that are incremental works, i.e., papers that are minor extensions of existing works, or papers that are not novel or significant enough.
-- Include papers that might be having some significantly novel contribution on a generic topic like ML, NLP, etc.
-- Skip papers that are proceedings of workshops, tutorials, or other non-research papers.
-
-Title: {title}
-Abstract: {abstract}
-
-Respond with only "yes", if the paper is primarily about one of allowed topics and not incremental. Say "no", if it is from the blacklisted topics or other 
-unspecified topics or fails to satisfy the criteria mentioned above. Be strict in filtering.
-Response format: Just 'yes' or 'no'"""
+        prompt = prompt.format(title=title, abstract=abstract)
 
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
-                max_tokens=5
+                max_tokens=10
             )
             is_relevant = response.choices[0].message.content.strip().lower() == "yes"
             self.cache_relevance(title, abstract, is_relevant)
@@ -275,6 +270,9 @@ class ConferenceDownloader:
         # Get total number of papers for progress tracking
         all_papers = soup.select('p.d-sm-flex')
         task_filter = self.progress.add_task(f"[red]Filtering {conference} {year}", total=len(all_papers))
+
+        # Selection prompt
+        interestingness_prompt = open("prompts/acl_prompt.txt", "r").read()
         
         for paper in soup.select('p.d-sm-flex'):
             try:
@@ -290,7 +288,7 @@ class ConferenceDownloader:
                         logger.info(f"Skipping already downloaded paper: {title}")
                     
                     # Check relevance
-                    if paper_filter.is_relevant_paper(title, abstract):
+                    if paper_filter.is_relevant_paper(title, abstract, interestingness_prompt):
                         papers.append(Paper(
                             title=title,
                             url=pdf_url,
@@ -327,24 +325,33 @@ class ConferenceDownloader:
         all_papers = soup.select('div.maincard')
         task_filter = self.progress.add_task(f"[red]Filtering NeurIPS {year}", total=len(all_papers))
 
+        # Selection prompt
+        interestingness_prompt = open("prompts/neurips_prompt.txt", "r").read()
+
         for paper in soup.select('div.maincard'):
             try:
                 # title in maincardbody, openreview link in a with title="OpenReview"
                 title = paper.select_one('div.maincardBody').text.strip()
+
+                # relevance cleaner
+                # paper_filter.clear_relevance_entry(title, "<abstract not provided>")
+                # paper_filter.clear_relevance_entry(title, "")
+                # continue
+
                 openreview_link = paper.select_one('a[title="OpenReview"]')
                 if openreview_link:
                     forum_url = openreview_link['href']
                     pdf_url = forum_url.replace("forum", "pdf")
 
                     # filter-1: does the title seem interesting, novel and worth reading?
-                    title_filter = False
-                    if paper_filter.is_relevant_paper(title, ""):
-                        logging.info(f"Passing title filter: {title}")
-                        title_filter = True
+                    title_filter_pass = False
+                    if paper_filter.is_relevant_paper(title, "abstract not provided", interestingness_prompt):
+                        # logging.info(f"Passing title filter: {title}")
+                        title_filter_pass = True
                     else:
-                        logging.info(f"Skipping non-relevant paper: {title}")
+                        logging.info(f"Failed title filter: {title}")
 
-                    if title_filter:
+                    if title_filter_pass:
                         # get abstract from forum page
                         response_forum = self.make_request(forum_url)
                         soup_forum = BeautifulSoup(response_forum.text, 'html.parser')
@@ -354,7 +361,9 @@ class ConferenceDownloader:
 
                         # filter-2: from the abstract, does the paper seem incremental or do they talk about incremental results on some specific task? 
                         # we really want to read the papers that are possibly high impact and would be rewarding.
-                        if paper_filter.is_relevant_paper(title, abstract):
+                        if paper_filter.is_relevant_paper(title, abstract, interestingness_prompt):
+                            # paper_filter.clear_relevance_entry(title, abstract)
+                            # continue
                             papers.append(Paper(
                                 title=title,
                                 url=pdf_url,
@@ -488,9 +497,9 @@ def main():
         
         # Configure which conferences and years to download
         conferences = {
-            # 'ACL': list(range(2023, 2024)),
             # 'EMNLP': list(range(2023, 2025)),
-            'NeurIPS': list(range(2023, 2024)),
+            'NeurIPS': list(range(2023, 2025)),
+            'ACL': list(range(2023, 2025)),
             # 'ICML': list(range(2020, 2024)),
             # 'JMLR': list(range(2020, 2024))
         }
