@@ -18,6 +18,7 @@ import hashlib
 import openai
 from rich.logging import RichHandler
 from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn, MofNCompleteColumn
+import argparse
 
 # Configure logging
 # logging.basicConfig(
@@ -34,6 +35,23 @@ logger = logging.getLogger('rich')
 
 logging.getLogger("openai").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
+
+"""
+python downloader.py
+-bu --base_url: Base URL for LLM API
+-m --model: LLM model name
+-db --cache_db: SQLite database for caching
+
+Example:
+LM Studio >> python downloader.py --base_url http://localhost:8080/v1 --model meta-llama-3.1-8b-instruct --cache_db paper_cache.db
+vllm >> python downloader.py --base_url http://localhost:8000/v1 --model meta-llama/Meta-Llama-3.1-8B-Instruct --cache_db paper_cache.db
+"""
+arg_parser = argparse.ArgumentParser()
+arg_parser.add_argument("-bu", "--base_url", type=str, default="http://localhost:8080/v1", help="Base URL for LLM API")
+arg_parser.add_argument("-m", "--model", type=str, default="meta-llama-3.1-8b-instruct", help="LLM model name")
+arg_parser.add_argument("-db", "--cache_db", type=str, default="paper_cache.db", help="SQLite database for caching")
+args = arg_parser.parse_args()
+
 
 def setup_openai_client(base_url: str) -> openai.Client:
     """Setup OpenAI client with local endpoint"""
@@ -54,10 +72,11 @@ class Paper:
     file_path: str = ""
 
 class PaperFilter:
-    def __init__(self, cache_db="paper_cache.db", base_url="http://localhost:8000/v1"):
+    def __init__(self, cache_db, base_url, model):
         self.client = setup_openai_client(base_url)
         self.cache_db = cache_db
         self._init_db()
+        self.model = model
 
     def _init_db(self):
         """Initialize SQLite database for caching"""
@@ -153,8 +172,7 @@ Response format: Just 'yes' or 'no'"""
 
         try:
             response = self.client.chat.completions.create(
-                # model="meta-llama-3.1-8b-instruct",
-                model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+                model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 max_tokens=5
@@ -255,7 +273,7 @@ class ConferenceDownloader:
         soup = BeautifulSoup(response.text, 'html.parser')
         
         papers = []
-        paper_filter = PaperFilter()
+        paper_filter = PaperFilter(args.cache_db, args.base_url, args.model)
 
         # Get total number of papers for progress tracking
         all_papers = soup.select('p.d-sm-flex')
@@ -310,7 +328,7 @@ class ConferenceDownloader:
         max_workers: int = 3
     ):
         """Download papers with controlled concurrency and save metadata"""
-        paper_filter = PaperFilter()
+        paper_filter = PaperFilter(args.cache_db, args.base_url, args.model)
         failed_downloads = []
         papers_to_download = []
         
