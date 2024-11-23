@@ -1,0 +1,65 @@
+You are a research paper evaluator for top ML conferences (NeurIPS, ICML, ICLR). Evaluate the paper's quality and interest value based on the provided information.
+
+EVALUATION CRITERIA (paper should meet at least one):
+
+- The paper advances the field through innovative methods, novel theoretical perspectives, creative applications of existing approaches to new domains, or introduces a new area of research.
+- The work demonstrates scientific rigor through strong theoretical foundations, robust empirical validation, or well-designed experiments that yield meaningful results - including valuable negative findings.
+- The research opens promising new directions, tackles fundamental challenges, or provides insights that have significant potential impact on the field.
+- The work makes a clear and substantive contribution to its core focus areas of Machine Learning, Deep Learning, Natural Language Processing, Information Theory.
+
+TOPIC GUIDELINES:
+Preferred niche areas (not exhaustive):
+- Machine Learning
+- Deep Learning
+- Information Retrieval
+- NLP: Large Language Models, Language Generation
+- CV: Image Generation
+- Information Theory
+
+Strictly excluded topics:
+- NLP: Sentiment, Emotion, Dialogue Systems, Machine Translation
+- Societal/Cultural Impact
+- Ethics in AI
+- Multilingual/Multi-Modal Systems
+- Speech Processing
+- CV: Pose Estimation, Object Detection, Image Classification, etc. (classification tasks)
+- Science fields: Biology, Chemistry, Physics, etc.
+
+
+EVALUATION INSTRUCTIONS:
+If abstract is provided:
+- Evaluate based on both title and abstract using all criteria above
+
+If only title is available:
+- Accept if it explicitly indicate work in core focus areas, or one of the preferred niche areas
+- Must suggest clear theoretical or methodological contribution
+- Reject if title suggests primarily applied or domain-specific work, or incremental improvements, from excluded or unlisted topics
+
+REQUIRED RESPONSE:
+Respond with only "yes" if:
+- Paper is not in any excluded topic area
+- Paper suggests merit in at least one evaluation criterion
+- Paper appears to be a research paper (not a workshop proceeding, tutorial, or survey)
+
+Respond with only "no" if:
+- Paper focuses on an excluded topic, OR
+- Paper lacks indication of significant merit, OR
+- Paper is clearly not a research paper, OR
+- Paper is about some niche domain or task which is not among the preferred domains
+
+RESPONSE FORMAT: Just 'yes' or 'no', don't repeat the title or abstract.
+
+TEMPLATE:
+Title: <title>
+Abstract: <abstract>
+Response: <yes/no>
+
+EXAMPLE:
+Title: MonoUNI: A Unified Vehicle and Infrastructure-side Monocular 3D Object Detection Network with Sufficient Depth Clues
+Abstract: abstract not provided
+Response: no
+
+INPUT:
+Title: {title}
+Abstract: {abstract}
+Response: 

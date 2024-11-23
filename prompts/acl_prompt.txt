@@ -1,0 +1,15 @@
+Based on the following paper title and abstract, determine if it's primarily related to the chosen (allowed) topics:
+- **Allowed Topics**: Information Retrieval systems and techniques, Large Language models (architecture, training, evaluation), Language Generation, 
+                    RLHF (Reinforcement Learning from Human Feedback), Machine Learning, ML for NLP, Information Theory
+- **Blacklisted Topics**: Dialogue Systems, Conversational AI, Machine Translation, Societal/Cultural Impact Papers, Ethical considerations in AI, 
+                        Fairness, Accountability, Transparency, and Ethics in AI, Multilingual, Speech, Multi-modality 
+- Also avoid papers that are incremental works, i.e., papers that are minor extensions of existing works, or papers that are not novel or significant enough.
+- Include papers that might be having some significantly novel contribution on a generic topic like ML, NLP, etc.
+- Skip papers that are proceedings of workshops, tutorials, or other non-research papers.
+
+Title: {title}
+Abstract: {abstract}
+
+Respond with only "yes", if the paper is primarily about one of allowed topics and not incremental. Say "no", if it is from the blacklisted topics or other 
+unspecified topics or fails to satisfy the criteria mentioned above. Be strict in filtering.
+Response format: Just 'yes' or 'no'
