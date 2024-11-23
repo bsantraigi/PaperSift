@@ -299,11 +299,6 @@ class ConferenceDownloader:
                         logger.info(f"Selected paper: {title}")
                     else:
                         logger.info(f"Skipped non-relevant paper: {title}")
-                    
-                    
-                    # no need to rate limit here as we are not downloading the papers
-                    # and LLM is locally hosted
-                    # time.sleep(self.min_delay)                    
             except Exception as e:
                 logger.error(f"Error processing paper: {str(e)}")
 
@@ -433,8 +428,6 @@ class ConferenceDownloader:
                 ): paper for paper in papers_to_download
             }
             
-            # with tqdm(total=len(papers_to_download), desc=f"{conference} {year}") as pbar:
-
             for future in concurrent.futures.as_completed(future_to_paper):
                 paper = future_to_paper[future]
                 try:
