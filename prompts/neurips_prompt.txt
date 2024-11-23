@@ -11,19 +11,25 @@ TOPIC GUIDELINES:
 Preferred niche areas (not exhaustive):
 - Machine Learning
 - Deep Learning
-- Information Retrieval
-- NLP: Large Language Models, Language Generation
-- CV: Image Generation
 - Information Theory
+- NLP: Large Language Models, Language Generation
+- Information Retrieval
+- CV: Image Generation
+- AI Safety, Interpretability, Explainability
 
 Strictly excluded topics:
 - NLP: Sentiment, Emotion, Dialogue Systems, Machine Translation
-- Societal/Cultural Impact
-- Ethics in AI
+- CV: Pose Estimation, Segmentation, Object Detection, Image Classification, etc. (classification tasks)
 - Multilingual/Multi-Modal Systems
 - Speech Processing
-- CV: Pose Estimation, Object Detection, Image Classification, etc. (classification tasks)
-- Science fields: Biology, Chemistry, Physics, etc.
+- Federated Learning
+- Benchmarks, Datasets, Tools, Demos
+- Workshop, Tutorial, Survey Papers
+- Societal/Cultural Impact
+- Ethics in AI
+- Science fields: Biology, Chemistry, Physics, Climate
+- Finance, Economics, Social Sciences
+- Protien Folding, Drug Discovery, Molecular Biology
 
 
 EVALUATION INSTRUCTIONS:
