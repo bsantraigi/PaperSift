@@ -129,21 +129,14 @@ class PaperFilter:
             logger.debug(f"Using cached relevance for: {title}")
             return is_relevant
 
-        prompt = f"""Based on the following paper title and abstract, determine if it's primarily related to any of these topics:
-Select Topics:
-- Information Retrieval systems and techniques
-- Language models (architecture, training, evaluation)
-- Language Generation
-- RLHF (Reinforcement Learning from Human Feedback)
-
-Ignore Topics:
-- Task-oriented Dialogue Systems
-- Machine Translation
+        prompt = f"""Based on the following paper title and abstract, determine if it's primarily related to the chosen (allowed) topics:
+**Allowed Topics**: Information Retrieval systems and techniques, Large Language models (architecture, training, evaluation), Language Generation, RLHF (Reinforcement Learning from Human Feedback), Machine Learning, ML for NLP
+**Blacklisted Topics**: Dialogue Systems, Conversational AI, Machine Translation, Societal/Cultural Impact Papers, Ethical considerations in AI, Fairness, Accountability, Transparency, and Ethics in AI, Multilingual, Speech, Multi-modality
 
 Title: {title}
 Abstract: {abstract}
 
-Respond with only "yes" if the paper is primarily about any of these topics, or "no" if it isn't. 
+Respond with only "yes", only if the paper is primarily about one of allowed topics. Say "no", if it from the blacklisted topics or other unspecified topics. Be strict in filtering.
 Response format: Just 'yes' or 'no'"""
 
         try:
@@ -154,7 +147,7 @@ Response format: Just 'yes' or 'no'"""
                 max_tokens=5
             )
             is_relevant = response.choices[0].message.content.strip().lower() == "yes"
-            self.cache_relevance(title, abstract, is_relevant)
+            # self.cache_relevance(title, abstract, is_relevant)
             return is_relevant
         except Exception as e:
             logger.error(f"Error classifying paper {title}: {str(e)}")
@@ -273,9 +266,11 @@ class ConferenceDownloader:
                         ))
                         logger.info(f"Selected paper: {title}")
                     else:
-                        logger.debug(f"Skipped non-relevant paper: {title}")
+                        logger.info(f"Skipped non-relevant paper: {title}")
                     
-                    time.sleep(self.min_delay)
+                    # no need to rate limit here as we are not downloading the papers
+                    # and LLM is locally hosted
+                    # time.sleep(self.min_delay)
                     
             except Exception as e:
                 logger.error(f"Error processing paper: {str(e)}")
@@ -347,43 +342,6 @@ class ConferenceDownloader:
                         logger.error(f"Failed to download {paper.title}: {str(e)}")
                     pbar.update(1)
     
-    # def download_conference_papers(
-    #     self,
-    #     papers: List[Tuple[str, str]],
-    #     dir_path: str,
-    #     conference: str,
-    #     year: int,
-    #     max_workers: int = 3  # Reduced number of concurrent downloads
-    # ):
-    #     """Download papers with controlled concurrency"""
-    #     failed_downloads = []
-        
-    #     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-    #         path_to_paper = lambda title: os.path.join(dir_path, f"{self.sanitize_filename(title)}.pdf")
-    #         future_to_paper = {
-    #             executor.submit(
-    #                 self.download_file,
-    #                 pdf_url,
-    #                 path_to_paper(title)
-    #             ): (title, pdf_url) for title, pdf_url, abstract in papers if not os.path.exists(path_to_paper(title))
-    #         }
-            
-    #         with tqdm(total=len(papers), desc=f"{conference} {year}") as pbar:
-    #             for future in concurrent.futures.as_completed(future_to_paper):
-    #                 title, url = future_to_paper[future]
-    #                 try:
-    #                     future.result()
-    #                 except Exception as e:
-    #                     failed_downloads.append((title, url))
-    #                     logger.error(f"Failed to download {title}: {str(e)}")
-    #                 pbar.update(1)
-        
-    #     # Report failed downloads
-    #     if failed_downloads:
-    #         logger.warning(f"\nFailed to download {len(failed_downloads)} papers from {conference} {year}:")
-    #         for title, url in failed_downloads:
-    #             logger.warning(f"- {title}: {url}")
-
     def download_acl(self, conference: str, year: int):
         """Download papers from ACL Anthology (ACL, EMNLP)"""
         dir_path = self.create_directory(conference, year)
