@@ -35,7 +35,7 @@ logger = logging.getLogger('rich')
 logging.getLogger("openai").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
 
-def setup_openai_client(base_url: str = "http://localhost:8080/v1") -> openai.Client:
+def setup_openai_client(base_url: str) -> openai.Client:
     """Setup OpenAI client with local endpoint"""
     return openai.Client(
         base_url=base_url,
@@ -54,7 +54,7 @@ class Paper:
     file_path: str = ""
 
 class PaperFilter:
-    def __init__(self, cache_db="paper_cache.db", base_url="http://localhost:8080/v1"):
+    def __init__(self, cache_db="paper_cache.db", base_url="http://localhost:8000/v1"):
         self.client = setup_openai_client(base_url)
         self.cache_db = cache_db
         self._init_db()
@@ -137,18 +137,24 @@ class PaperFilter:
             return is_relevant
 
         prompt = f"""Based on the following paper title and abstract, determine if it's primarily related to the chosen (allowed) topics:
-**Allowed Topics**: Information Retrieval systems and techniques, Large Language models (architecture, training, evaluation), Language Generation, RLHF (Reinforcement Learning from Human Feedback), Machine Learning, ML for NLP
-**Blacklisted Topics**: Dialogue Systems, Conversational AI, Machine Translation, Societal/Cultural Impact Papers, Ethical considerations in AI, Fairness, Accountability, Transparency, and Ethics in AI, Multilingual, Speech, Multi-modality
+- **Allowed Topics**: Information Retrieval systems and techniques, Large Language models (architecture, training, evaluation), Language Generation, 
+                    RLHF (Reinforcement Learning from Human Feedback), Machine Learning, ML for NLP, Information Theory
+- **Blacklisted Topics**: Dialogue Systems, Conversational AI, Machine Translation, Societal/Cultural Impact Papers, Ethical considerations in AI, 
+                        Fairness, Accountability, Transparency, and Ethics in AI, Multilingual, Speech, Multi-modality 
+- Also avoid papers that are incremental works, i.e., papers that are minor extensions of existing works, or papers that are not novel or significant enough.
+- Include papers that might be having some significantly novel contribution on a generic topic like ML, NLP, etc.
 
 Title: {title}
 Abstract: {abstract}
 
-Respond with only "yes", only if the paper is primarily about one of allowed topics. Say "no", if it from the blacklisted topics or other unspecified topics. Be strict in filtering.
+Respond with only "yes", if the paper is primarily about one of allowed topics and not incremental. Say "no", if it is from the blacklisted topics or other 
+unspecified topics or fails to satisfy the criteria mentioned above. Be strict in filtering.
 Response format: Just 'yes' or 'no'"""
 
         try:
             response = self.client.chat.completions.create(
-                model="meta-llama-3.1-8b-instruct",
+                # model="meta-llama-3.1-8b-instruct",
+                model="meta-llama/Meta-Llama-3.1-8B-Instruct",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 max_tokens=5
