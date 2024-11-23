@@ -2,3 +2,4 @@ paper_cache.db
 ml_papers/
 *.log
 cachedir/
+**__pycache__**

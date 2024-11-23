@@ -16,17 +16,24 @@ from dataclasses import dataclass
 from datetime import datetime
 import hashlib
 import openai
+from rich.logging import RichHandler
+from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn, MofNCompleteColumn
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('conference_downloader.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(levelname)s - %(message)s',
+#     handlers=[
+#         logging.FileHandler('conference_downloader.log'),
+#         logging.StreamHandler()
+#     ]
+# )
+# logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, handlers=[RichHandler(level="INFO")])
+logger = logging.getLogger('rich')
+
+logging.getLogger("openai").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.ERROR)
 
 def setup_openai_client(base_url: str = "http://localhost:8080/v1") -> openai.Client:
     """Setup OpenAI client with local endpoint"""
@@ -147,14 +154,14 @@ Response format: Just 'yes' or 'no'"""
                 max_tokens=5
             )
             is_relevant = response.choices[0].message.content.strip().lower() == "yes"
-            # self.cache_relevance(title, abstract, is_relevant)
+            self.cache_relevance(title, abstract, is_relevant)
             return is_relevant
         except Exception as e:
             logger.error(f"Error classifying paper {title}: {str(e)}")
             return False
 
 class ConferenceDownloader:
-    def __init__(self, base_dir="papers"):
+    def __init__(self, base_dir="papers", progress=None):
         self.base_dir = base_dir
         self.session = requests.Session()
         self.headers = {
@@ -163,6 +170,9 @@ class ConferenceDownloader:
         # Rate limits: 1 request per 10 seconds per domain
         self.domain_timestamps = {}
         self.min_delay = 10.0  # increased to 10 seconds between requests
+
+        assert progress is not None
+        self.progress = progress
 
     def get_domain(self, url: str) -> str:
         """Extract domain from URL for rate limiting"""
@@ -240,6 +250,10 @@ class ConferenceDownloader:
         
         papers = []
         paper_filter = PaperFilter()
+
+        # Get total number of papers for progress tracking
+        all_papers = soup.select('p.d-sm-flex')
+        task_filter = self.progress.add_task(f"[red]Filtering {conference} {year}", total=len(all_papers))
         
         for paper in soup.select('p.d-sm-flex'):
             try:
@@ -268,13 +282,16 @@ class ConferenceDownloader:
                     else:
                         logger.info(f"Skipped non-relevant paper: {title}")
                     
+                    self.progress.update(task_filter, advance=1)
+                    
                     # no need to rate limit here as we are not downloading the papers
                     # and LLM is locally hosted
-                    # time.sleep(self.min_delay)
-                    
+                    # time.sleep(self.min_delay)                    
             except Exception as e:
                 logger.error(f"Error processing paper: {str(e)}")
                 continue
+        
+        task_filter.completed = True
         
         return papers
 
@@ -320,6 +337,7 @@ class ConferenceDownloader:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         
         # Download new papers
+        task_downloader = self.progress.add_task(f"[green]Downloading {conference} {year}", total=len(papers_to_download))
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_paper = {
                 executor.submit(
@@ -329,18 +347,27 @@ class ConferenceDownloader:
                 ): paper for paper in papers_to_download
             }
             
-            with tqdm(total=len(papers_to_download), desc=f"{conference} {year}") as pbar:
-                for future in concurrent.futures.as_completed(future_to_paper):
-                    paper = future_to_paper[future]
-                    try:
-                        success = future.result()
-                        if success:
-                            paper.downloaded = True
-                            paper_filter.mark_as_downloaded(paper)
-                    except Exception as e:
+            # with tqdm(total=len(papers_to_download), desc=f"{conference} {year}") as pbar:
+
+            for future in concurrent.futures.as_completed(future_to_paper):
+                paper = future_to_paper[future]
+                try:
+                    success = future.result()
+                    if success:
+                        paper.downloaded = True
+                        paper_filter.mark_as_downloaded(paper)
+                        logger.info(f"Downloaded {paper.title}")
+                    else:
                         failed_downloads.append(paper)
-                        logger.error(f"Failed to download {paper.title}: {str(e)}")
-                    pbar.update(1)
+                        logger.error(f"Failed to download {paper.title}")
+
+                    self.progress.update(task_downloader, advance=1)
+                except Exception as e:
+                    failed_downloads.append(paper)
+                    logger.error(f"Failed to download {paper.title}: {str(e)}")
+                    # pbar.update(1)
+        
+        task_downloader.completed = True
     
     def download_acl(self, conference: str, year: int):
         """Download papers from ACL Anthology (ACL, EMNLP)"""
@@ -377,39 +404,40 @@ def main():
     os.makedirs(base_dir, exist_ok=True)
     
     # Initialize downloader
-    downloader = ConferenceDownloader(base_dir=base_dir)
-    
-    # Configure which conferences and years to download
-    conferences = {
-        'ACL': list(range(2023, 2025)),
-        'EMNLP': list(range(2023, 2025)),
-        # 'NeurIPS': list(range(2020, 2024)),
-        # 'ICML': list(range(2020, 2024)),
-        # 'JMLR': list(range(2020, 2024))
-    }
-    
-    try:
-        for conf, years in conferences.items():
-            for year in years:
-                logger.info(f"Starting download for {conf} {year}")
-                if conf in ['ACL', 'EMNLP']:
-                    downloader.download_acl(conf, year)
-                elif conf == 'NeurIPS':
-                    downloader.download_neurips(year)
-                elif conf == 'ICML':
-                    downloader.download_icml(year)
-                elif conf == 'JMLR':
-                    downloader.download_jmlr(year)
-                logger.info(f"Completed download for {conf} {year}")
-                
-                # Add delay between conference downloads
-                time.sleep(5)
-    except KeyboardInterrupt:
-        logger.warning("\nDownload interrupted by user. Progress has been saved.")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred: {str(e)}")
-    finally:
-        logger.info("Download process completed")
+    with Progress(SpinnerColumn(), *Progress.get_default_columns(), MofNCompleteColumn(), TimeElapsedColumn()) as progress:
+        downloader = ConferenceDownloader(base_dir=base_dir, progress=progress)
+        
+        # Configure which conferences and years to download
+        conferences = {
+            'ACL': list(range(2023, 2025)),
+            'EMNLP': list(range(2023, 2025)),
+            # 'NeurIPS': list(range(2020, 2024)),
+            # 'ICML': list(range(2020, 2024)),
+            # 'JMLR': list(range(2020, 2024))
+        }
+        
+        try:
+            for conf, years in conferences.items():
+                for year in years:
+                    logger.info(f"Starting download for {conf} {year}")
+                    if conf in ['ACL', 'EMNLP']:
+                        downloader.download_acl(conf, year)
+                    elif conf == 'NeurIPS':
+                        downloader.download_neurips(year)
+                    elif conf == 'ICML':
+                        downloader.download_icml(year)
+                    elif conf == 'JMLR':
+                        downloader.download_jmlr(year)
+                    logger.info(f"Completed download for {conf} {year}")
+                    
+                    # Add delay between conference downloads
+                    time.sleep(5)
+        except KeyboardInterrupt:
+            logger.warning("\nDownload interrupted by user. Progress has been saved.")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred: {str(e)}")
+        finally:
+            logger.info("Download process completed")
 
 if __name__ == "__main__":
     main()
