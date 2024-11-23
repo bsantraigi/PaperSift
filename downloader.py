@@ -321,19 +321,54 @@ class ConferenceDownloader:
         # Parse HTML and extract paper information
         soup = BeautifulSoup(response.text, 'html.parser')
         papers = []
-        for paper in soup.select('div.paper'):
-            title = paper.select_one('h4').text.strip()
-            abstract = paper.select_one('p').text.strip()
-            pdf_link = paper.select_one('a[href$=".pdf"]')
-            if pdf_link:
-                pdf_url = urljoin(base_url, pdf_link['href'])
-                papers.append(Paper(
-                    title=title,
-                    url=pdf_url,
-                    abstract=abstract,
-                    conference="NeurIPS",
-                    year=year
-                ))
+        paper_filter = PaperFilter(args.cache_db, args.base_url, args.model)
+
+        # tracker 
+        all_papers = soup.select('div.maincard')
+        task_filter = self.progress.add_task(f"[red]Filtering NeurIPS {year}", total=len(all_papers))
+
+        for paper in soup.select('div.maincard'):
+            try:
+                # title in maincardbody, openreview link in a with title="OpenReview"
+                title = paper.select_one('div.maincardBody').text.strip()
+                openreview_link = paper.select_one('a[title="OpenReview"]')
+                if openreview_link:
+                    forum_url = openreview_link['href']
+                    pdf_url = forum_url.replace("forum", "pdf")
+
+                    # filter-1: does the title seem interesting, novel and worth reading?
+                    title_filter = False
+                    if paper_filter.is_relevant_paper(title, ""):
+                        logging.info(f"Passing title filter: {title}")
+                        title_filter = True
+                    else:
+                        logging.info(f"Skipping non-relevant paper: {title}")
+
+                    if title_filter:
+                        # get abstract from forum page
+                        response_forum = self.make_request(forum_url)
+                        soup_forum = BeautifulSoup(response_forum.text, 'html.parser')
+                        # comes in pair of span.note-content-field and span.note-content-value
+                        features = {f.text.strip():v.text.strip() for f, v in zip(soup_forum.select('strong.note-content-field'), soup_forum.select('span.note-content-value'))}
+                        abstract = features.get("Abstract:", "")
+
+                        # filter-2: from the abstract, does the paper seem incremental or do they talk about incremental results on some specific task? 
+                        # we really want to read the papers that are possibly high impact and would be rewarding.
+                        if paper_filter.is_relevant_paper(title, abstract):
+                            papers.append(Paper(
+                                title=title,
+                                url=pdf_url,
+                                abstract=abstract,
+                                conference="NeurIPS",
+                                year=year
+                            ))
+                            logger.info(f"Selected paper: {title}")
+                        else:
+                            logger.info(f"Skipped non-relevant paper: {title}")
+            except Exception as e:
+                logger.error(f"Error processing paper: {str(e)}")
+
+            self.progress.update(task_filter, advance=1)
 
         return papers
                 
@@ -453,9 +488,9 @@ def main():
         
         # Configure which conferences and years to download
         conferences = {
-            'ACL': list(range(2023, 2024)),
+            # 'ACL': list(range(2023, 2024)),
             # 'EMNLP': list(range(2023, 2025)),
-            # 'NeurIPS': list(range(2023, 2024)),
+            'NeurIPS': list(range(2023, 2024)),
             # 'ICML': list(range(2020, 2024)),
             # 'JMLR': list(range(2020, 2024))
         }
