@@ -1,4 +1,5 @@
 import requests
+import random
 import os
 import json
 from bs4 import BeautifulSoup
@@ -162,6 +163,7 @@ class PaperFilter:
                         Fairness, Accountability, Transparency, and Ethics in AI, Multilingual, Speech, Multi-modality 
 - Also avoid papers that are incremental works, i.e., papers that are minor extensions of existing works, or papers that are not novel or significant enough.
 - Include papers that might be having some significantly novel contribution on a generic topic like ML, NLP, etc.
+- Skip papers that are proceedings of workshops, tutorials, or other non-research papers.
 
 Title: {title}
 Abstract: {abstract}
@@ -244,21 +246,16 @@ class ConferenceDownloader:
     def download_file(self, url: str, filepath: str) -> bool:
         """Download a single file with retry logic"""
         try:
+            # wait a random time b/w (10, 20)
+            time.sleep(random.randint(10, 20))
             response = self.make_request(url, stream=True)
             
             # Get total file size if available
             total_size = int(response.headers.get('content-length', 0))
             
             with open(filepath, 'wb') as f:
-                with tqdm(
-                    total=total_size,
-                    unit='iB',
-                    unit_scale=True,
-                    desc=os.path.basename(filepath)
-                ) as pbar:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        size = f.write(chunk)
-                        pbar.update(size)
+                for chunk in response.iter_content(chunk_size=8192):
+                    size = f.write(chunk)
             return True
         except Exception as e:
             logger.error(f"Failed to download {url}: {str(e)}")
@@ -291,7 +288,6 @@ class ConferenceDownloader:
                     is_downloaded, file_path = paper_filter.is_already_downloaded(title, pdf_url)
                     if is_downloaded:
                         logger.info(f"Skipping already downloaded paper: {title}")
-                        continue
                     
                     # Check relevance
                     if paper_filter.is_relevant_paper(title, abstract):
@@ -306,19 +302,41 @@ class ConferenceDownloader:
                     else:
                         logger.info(f"Skipped non-relevant paper: {title}")
                     
-                    self.progress.update(task_filter, advance=1)
                     
                     # no need to rate limit here as we are not downloading the papers
                     # and LLM is locally hosted
                     # time.sleep(self.min_delay)                    
             except Exception as e:
                 logger.error(f"Error processing paper: {str(e)}")
-                continue
-        
-        task_filter.completed = True
+
+            self.progress.update(task_filter, advance=1)
         
         return papers
 
+    def get_papers_neurips(self, year: int) -> List[Paper]:
+        """Get paper information from NeurIPS with abstracts"""
+        base_url = f"https://neurips.cc/Conferences/{year}/Schedule"
+        response = self.make_request(base_url)
+
+        # Parse HTML and extract paper information
+        soup = BeautifulSoup(response.text, 'html.parser')
+        papers = []
+        for paper in soup.select('div.paper'):
+            title = paper.select_one('h4').text.strip()
+            abstract = paper.select_one('p').text.strip()
+            pdf_link = paper.select_one('a[href$=".pdf"]')
+            if pdf_link:
+                pdf_url = urljoin(base_url, pdf_link['href'])
+                papers.append(Paper(
+                    title=title,
+                    url=pdf_url,
+                    abstract=abstract,
+                    conference="NeurIPS",
+                    year=year
+                ))
+
+        return papers
+                
     def download_conference_papers(
         self,
         papers: List[Paper],
@@ -384,14 +402,12 @@ class ConferenceDownloader:
                     else:
                         failed_downloads.append(paper)
                         logger.error(f"Failed to download {paper.title}")
-
-                    self.progress.update(task_downloader, advance=1)
                 except Exception as e:
                     failed_downloads.append(paper)
                     logger.error(f"Failed to download {paper.title}: {str(e)}")
-                    # pbar.update(1)
+
+                self.progress.update(task_downloader, advance=1)
         
-        task_downloader.completed = True
     
     def download_acl(self, conference: str, year: int):
         """Download papers from ACL Anthology (ACL, EMNLP)"""
@@ -404,8 +420,12 @@ class ConferenceDownloader:
 
     def download_neurips(self, year: int):
         """Download papers from NeurIPS"""
-        # Similar implementation for NeurIPS with rate limiting...
-        pass
+        dir_path = self.create_directory("NeurIPS", year)
+        try:
+            papers = self.get_papers_neurips(year)
+            self.download_conference_papers(papers, dir_path, "NeurIPS", year)
+        except Exception as e:
+            logger.error(f"Error processing NeurIPS {year}: {str(e)}")
 
     def download_icml(self, year: int):
         """Download papers from ICML"""
@@ -433,9 +453,9 @@ def main():
         
         # Configure which conferences and years to download
         conferences = {
-            'ACL': list(range(2023, 2025)),
-            'EMNLP': list(range(2023, 2025)),
-            # 'NeurIPS': list(range(2020, 2024)),
+            'ACL': list(range(2023, 2024)),
+            # 'EMNLP': list(range(2023, 2025)),
+            # 'NeurIPS': list(range(2023, 2024)),
             # 'ICML': list(range(2020, 2024)),
             # 'JMLR': list(range(2020, 2024))
         }
