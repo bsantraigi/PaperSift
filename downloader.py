@@ -11,6 +11,11 @@ from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_excep
 from ratelimit import limits, sleep_and_retry
 from typing import Tuple, List
 import logging
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime
+import hashlib
+import openai
 
 # Configure logging
 logging.basicConfig(
@@ -22,6 +27,138 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+def setup_openai_client(base_url: str = "http://localhost:8080/v1") -> openai.Client:
+    """Setup OpenAI client with local endpoint"""
+    return openai.Client(
+        base_url=base_url,
+        api_key="not-needed"  # Local server might not need API key
+    )
+
+@dataclass
+class Paper:
+    title: str
+    url: str
+    abstract: str
+    conference: str
+    year: int
+    is_relevant: bool = False
+    downloaded: bool = False
+    file_path: str = ""
+
+class PaperFilter:
+    def __init__(self, cache_db="paper_cache.db", base_url="http://localhost:8080/v1"):
+        self.client = setup_openai_client(base_url)
+        self.cache_db = cache_db
+        self._init_db()
+
+    def _init_db(self):
+        """Initialize SQLite database for caching"""
+        with sqlite3.connect(self.cache_db) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS paper_cache (
+                    paper_hash TEXT PRIMARY KEY,
+                    title TEXT,
+                    abstract TEXT,
+                    is_relevant BOOLEAN,
+                    cached_at TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS downloaded_papers (
+                    paper_hash TEXT PRIMARY KEY,
+                    title TEXT,
+                    url TEXT,
+                    file_path TEXT,
+                    conference TEXT,
+                    year INTEGER,
+                    downloaded_at TIMESTAMP
+                )
+            """)
+
+    def _get_paper_hash(self, title: str, abstract: str) -> str:
+        """Generate unique hash for paper based on title and abstract"""
+        return hashlib.sha256(f"{title}{abstract}".encode()).hexdigest()
+
+    def get_cached_relevance(self, title: str, abstract: str) -> tuple[bool, bool]:
+        """Get cached relevance decision. Returns (is_cached, is_relevant)"""
+        paper_hash = self._get_paper_hash(title, abstract)
+        with sqlite3.connect(self.cache_db) as conn:
+            result = conn.execute(
+                "SELECT is_relevant FROM paper_cache WHERE paper_hash = ?",
+                (paper_hash,)
+            ).fetchone()
+            return bool(result is not None), bool(result[0]) if result else False
+
+    def cache_relevance(self, title: str, abstract: str, is_relevant: bool):
+        """Cache the relevance decision"""
+        paper_hash = self._get_paper_hash(title, abstract)
+        with sqlite3.connect(self.cache_db) as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO paper_cache 
+                (paper_hash, title, abstract, is_relevant, cached_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (paper_hash, title, abstract, is_relevant, datetime.now()))
+
+    def is_already_downloaded(self, title: str, url: str) -> tuple[bool, str]:
+        """Check if paper is already downloaded. Returns (is_downloaded, file_path)"""
+        paper_hash = self._get_paper_hash(title, url)
+        with sqlite3.connect(self.cache_db) as conn:
+            result = conn.execute(
+                "SELECT file_path FROM downloaded_papers WHERE paper_hash = ?",
+                (paper_hash,)
+            ).fetchone()
+            return bool(result is not None), result[0] if result else ""
+
+    def mark_as_downloaded(self, paper: Paper):
+        """Mark paper as downloaded in the database"""
+        paper_hash = self._get_paper_hash(paper.title, paper.url)
+        with sqlite3.connect(self.cache_db) as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO downloaded_papers 
+                (paper_hash, title, url, file_path, conference, year, downloaded_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (paper_hash, paper.title, paper.url, paper.file_path,
+                 paper.conference, paper.year, datetime.now()))
+
+    def is_relevant_paper(self, title: str, abstract: str) -> bool:
+        """Check if paper is relevant using cache first, then LLM if needed"""
+        is_cached, is_relevant = self.get_cached_relevance(title, abstract)
+        
+        if is_cached:
+            logger.debug(f"Using cached relevance for: {title}")
+            return is_relevant
+
+        prompt = f"""Based on the following paper title and abstract, determine if it's primarily related to any of these topics:
+Select Topics:
+- Information Retrieval systems and techniques
+- Language models (architecture, training, evaluation)
+- Language Generation
+- RLHF (Reinforcement Learning from Human Feedback)
+
+Ignore Topics:
+- Task-oriented Dialogue Systems
+- Machine Translation
+
+Title: {title}
+Abstract: {abstract}
+
+Respond with only "yes" if the paper is primarily about any of these topics, or "no" if it isn't. 
+Response format: Just 'yes' or 'no'"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model="meta-llama-3.1-8b-instruct",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=5
+            )
+            is_relevant = response.choices[0].message.content.strip().lower() == "yes"
+            self.cache_relevance(title, abstract, is_relevant)
+            return is_relevant
+        except Exception as e:
+            logger.error(f"Error classifying paper {title}: {str(e)}")
+            return False
 
 class ConferenceDownloader:
     def __init__(self, base_dir="papers"):
@@ -102,63 +239,157 @@ class ConferenceDownloader:
                 os.remove(filepath)  # Clean up partial download
             raise
 
-    def get_papers_acl(self, conference: str, year: int) -> List[Tuple[str, str]]:
-        """Get paper information from ACL Anthology"""
+    def get_papers_acl(self, conference: str, year: int) -> List[Paper]:
+        """Get paper information from ACL Anthology with abstracts"""
         base_url = f"https://aclanthology.org/events/{conference.lower()}-{year}/"
         response = self.make_request(base_url)
         soup = BeautifulSoup(response.text, 'html.parser')
         
         papers = []
+        paper_filter = PaperFilter()
+        
         for paper in soup.select('p.d-sm-flex'):
-            pdf_link = paper.select_one('a[href$=".pdf"]')
-            if pdf_link:
-                title = paper.select_one('strong').text.strip()
-                pdf_url = urljoin("https://aclanthology.org", pdf_link['href'])
-                papers.append((title, pdf_url))
+            try:
+                pdf_link = paper.select_one('a[href$=".pdf"]')
+                if pdf_link:
+                    title = paper.select_one('strong').text.strip()
+                    pdf_url = urljoin("https://aclanthology.org", pdf_link['href'])
+                    abstract = paper.find_next("div").text.strip()
+                    
+                    # Check if already downloaded
+                    is_downloaded, file_path = paper_filter.is_already_downloaded(title, pdf_url)
+                    if is_downloaded:
+                        logger.info(f"Skipping already downloaded paper: {title}")
+                        continue
+                    
+                    # Check relevance
+                    if paper_filter.is_relevant_paper(title, abstract):
+                        papers.append(Paper(
+                            title=title,
+                            url=pdf_url,
+                            abstract=abstract,
+                            conference=conference,
+                            year=year
+                        ))
+                        logger.info(f"Selected paper: {title}")
+                    else:
+                        logger.debug(f"Skipped non-relevant paper: {title}")
+                    
+                    time.sleep(self.min_delay)
+                    
+            except Exception as e:
+                logger.error(f"Error processing paper: {str(e)}")
+                continue
+        
         return papers
 
     def download_conference_papers(
         self,
-        papers: List[Tuple[str, str]],
+        papers: List[Paper],
         dir_path: str,
         conference: str,
         year: int,
-        max_workers: int = 3  # Reduced number of concurrent downloads
+        max_workers: int = 3
     ):
-        """Download papers with controlled concurrency"""
+        """Download papers with controlled concurrency and save metadata"""
+        paper_filter = PaperFilter()
         failed_downloads = []
+        papers_to_download = []
         
+        # Filter out already downloaded papers and prepare metadata
+        metadata_entries = []
+        for paper in papers:
+            is_downloaded, file_path = paper_filter.is_already_downloaded(paper.title, paper.url)
+            if is_downloaded:
+                paper.downloaded = True
+                paper.file_path = file_path
+                logger.info(f"Paper already downloaded: {paper.title}")
+            else:
+                paper.file_path = os.path.join(dir_path, f"{self.sanitize_filename(paper.title)}.pdf")
+                papers_to_download.append(paper)
+            
+            metadata_entries.append({
+                "title": paper.title,
+                "url": paper.url,
+                "abstract": paper.abstract,
+                "conference": conference,
+                "year": year,
+                "file_path": paper.file_path,
+                "downloaded": paper.downloaded
+            })
+        
+        # Save/update metadata
+        metadata_file = os.path.join(dir_path, "metadata.jsonl")
+        with open(metadata_file, "w", encoding="utf-8") as f:
+            for entry in metadata_entries:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        
+        # Download new papers
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_paper = {
                 executor.submit(
                     self.download_file,
-                    pdf_url,
-                    os.path.join(dir_path, f"{self.sanitize_filename(title)}.pdf")
-                ): (title, pdf_url) for title, pdf_url in papers
+                    paper.url,
+                    paper.file_path
+                ): paper for paper in papers_to_download
             }
             
-            with tqdm(total=len(papers), desc=f"{conference} {year}") as pbar:
+            with tqdm(total=len(papers_to_download), desc=f"{conference} {year}") as pbar:
                 for future in concurrent.futures.as_completed(future_to_paper):
-                    title, url = future_to_paper[future]
+                    paper = future_to_paper[future]
                     try:
-                        future.result()
+                        success = future.result()
+                        if success:
+                            paper.downloaded = True
+                            paper_filter.mark_as_downloaded(paper)
                     except Exception as e:
-                        failed_downloads.append((title, url))
-                        logger.error(f"Failed to download {title}: {str(e)}")
+                        failed_downloads.append(paper)
+                        logger.error(f"Failed to download {paper.title}: {str(e)}")
                     pbar.update(1)
+    
+    # def download_conference_papers(
+    #     self,
+    #     papers: List[Tuple[str, str]],
+    #     dir_path: str,
+    #     conference: str,
+    #     year: int,
+    #     max_workers: int = 3  # Reduced number of concurrent downloads
+    # ):
+    #     """Download papers with controlled concurrency"""
+    #     failed_downloads = []
         
-        # Report failed downloads
-        if failed_downloads:
-            logger.warning(f"\nFailed to download {len(failed_downloads)} papers from {conference} {year}:")
-            for title, url in failed_downloads:
-                logger.warning(f"- {title}: {url}")
+    #     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+    #         path_to_paper = lambda title: os.path.join(dir_path, f"{self.sanitize_filename(title)}.pdf")
+    #         future_to_paper = {
+    #             executor.submit(
+    #                 self.download_file,
+    #                 pdf_url,
+    #                 path_to_paper(title)
+    #             ): (title, pdf_url) for title, pdf_url, abstract in papers if not os.path.exists(path_to_paper(title))
+    #         }
+            
+    #         with tqdm(total=len(papers), desc=f"{conference} {year}") as pbar:
+    #             for future in concurrent.futures.as_completed(future_to_paper):
+    #                 title, url = future_to_paper[future]
+    #                 try:
+    #                     future.result()
+    #                 except Exception as e:
+    #                     failed_downloads.append((title, url))
+    #                     logger.error(f"Failed to download {title}: {str(e)}")
+    #                 pbar.update(1)
+        
+    #     # Report failed downloads
+    #     if failed_downloads:
+    #         logger.warning(f"\nFailed to download {len(failed_downloads)} papers from {conference} {year}:")
+    #         for title, url in failed_downloads:
+    #             logger.warning(f"- {title}: {url}")
 
     def download_acl(self, conference: str, year: int):
         """Download papers from ACL Anthology (ACL, EMNLP)"""
         dir_path = self.create_directory(conference, year)
         try:
             papers = self.get_papers_acl(conference, year)
-            self.download_conference_papers(papers, dir_path, conference, year)
+            self.download_conference_papers(papers, dir_path, conference, year, max_workers=1)
         except Exception as e:
             logger.error(f"Error processing {conference} {year}: {str(e)}")
 
