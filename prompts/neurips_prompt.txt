@@ -20,8 +20,10 @@ Preferred niche areas (not exhaustive):
 Strictly excluded topics:
 - NLP: Sentiment, Emotion, Dialogue Systems, Machine Translation
 - CV: Pose Estimation, Segmentation, Object Detection, Image Classification, etc. (classification tasks)
+- 3D Vision
+- Self-driving
 - Multilingual/Multi-Modal Systems
-- Speech Processing
+- Speech, Audio-Visual Modeling 
 - Federated Learning
 - Benchmarks, Datasets, Tools, Demos
 - Workshop, Tutorial, Survey Papers
@@ -30,6 +32,8 @@ Strictly excluded topics:
 - Science fields: Biology, Chemistry, Physics, Climate
 - Finance, Economics, Social Sciences
 - Protien Folding, Drug Discovery, Molecular Biology
+- Neuroscience, Brain interfaces
+- GNNs, Graphs
 
 
 EVALUATION INSTRUCTIONS:
