@@ -102,6 +102,14 @@ class PaperFilter:
                     downloaded_at TIMESTAMP
                 )
             """)
+            # cache web url requests
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS web_cache (
+                    url TEXT PRIMARY KEY,
+                    content TEXT,
+                    cached_at TIMESTAMP
+                )
+            """)
 
     def _get_paper_hash(self, title: str, abstract: str) -> str:
         """Generate unique hash for paper based on title and abstract"""
@@ -148,14 +156,14 @@ class PaperFilter:
             """, (paper_hash, paper.title, paper.url, paper.file_path,
                  paper.conference, paper.year, datetime.now()))
 
-    def clear_relevance_entry(self, title: str, abstract: str):
-        """Clear all relevance entry from cache"""
-        paper_hash = self._get_paper_hash(title, abstract)
-        with sqlite3.connect(self.cache_db) as conn:
-            conn.execute(
-                "DELETE FROM paper_cache WHERE paper_hash = ?",
-                (paper_hash,)
-            )
+    # def clear_relevance_entry(self, title: str, abstract: str):
+    #     """Clear all relevance entry from cache"""
+    #     paper_hash = self._get_paper_hash(title, abstract)
+    #     with sqlite3.connect(self.cache_db) as conn:
+    #         conn.execute(
+    #             "DELETE FROM paper_cache WHERE paper_hash = ?",
+    #             (paper_hash,)
+    #         )
 
     def is_relevant_paper(self, title: str, abstract: str, prompt: str) -> bool:
         """Check if paper is relevant using cache first, then LLM if needed"""
@@ -180,6 +188,26 @@ class PaperFilter:
         except Exception as e:
             logger.error(f"Error classifying paper {title}: {str(e)}")
             return False
+        
+    def get_cached_url_response(self, url: str) -> str:
+        """Get cached response content for URL"""
+        with sqlite3.connect(self.cache_db) as conn:
+            result = conn.execute(
+                "SELECT content FROM web_cache WHERE url = ?",
+                (url,)
+            ).fetchone()
+            is_cached = bool(result is not None)
+            return is_cached, result[0] if result else ""
+
+    def cache_url_response(self, url: str, content: str):
+        """Cache the response content for URL"""
+        with sqlite3.connect(self.cache_db) as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO web_cache 
+                (url, content, cached_at)
+                VALUES (?, ?, ?)
+            """, (url, content, str(datetime.now())))
+
 
 class ConferenceDownloader:
     def __init__(self, base_dir="papers", progress=None):
@@ -195,13 +223,15 @@ class ConferenceDownloader:
         assert progress is not None
         self.progress = progress
 
+        # A common filter for all needs
+        self.db_filter = PaperFilter(args.cache_db, args.base_url, args.model)
+
     def get_domain(self, url: str) -> str:
         """Extract domain from URL for rate limiting"""
         from urllib.parse import urlparse
         return urlparse(url).netloc
 
     @sleep_and_retry
-    @limits(calls=1, period=10)  # 1 call every 10 seconds
     @retry(
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=4, max=60),
@@ -210,21 +240,35 @@ class ConferenceDownloader:
             f"Attempt {retry_state.attempt_number} failed. Retrying in {retry_state.next_action.sleep} seconds..."
         )
     )
-    def make_request(self, url: str, stream: bool = False) -> requests.Response:
+    def make_request(self, url: str, stream: bool = False, cache_response: bool = True) -> requests.Response:
         """Make a rate-limited request with retries"""
-        domain = self.get_domain(url)
-        
-        # Ensure minimum delay between requests to same domain
-        current_time = time.time()
-        if domain in self.domain_timestamps:
-            elapsed = current_time - self.domain_timestamps[domain]
-            if elapsed < self.min_delay:
-                time.sleep(self.min_delay - elapsed)
+
+        # Check if response is cached
+        if cache_response:
+            is_cached, content = self.db_filter.get_cached_url_response(url)
+            if is_cached:
+                j_response = json.loads(content)
+                response = requests.Response()
+                response.status_code = j_response['status_code']
+                response.headers = j_response['headers']
+                response._content = j_response['content'].encode()
+                return response
+
+        # sleep for a random time b/w (10, 20) seconds
+        time.sleep(random.randint(10, 20))
         
         response = self.session.get(url, headers=self.headers, stream=stream)
         response.raise_for_status()
         
-        self.domain_timestamps[domain] = time.time()
+        # Cache response content
+        if cache_response:
+            serialized_response = json.dumps({
+                "status_code": response.status_code,
+                "headers": dict(response.headers),
+                "content": response.text
+            })
+            self.db_filter.cache_url_response(url, serialized_response)
+        
         return response
 
     def create_directory(self, conference: str, year: int) -> str:
@@ -243,7 +287,7 @@ class ConferenceDownloader:
         try:
             # wait a random time b/w (10, 20)
             time.sleep(random.randint(10, 20))
-            response = self.make_request(url, stream=True)
+            response = self.make_request(url, stream=True, cache_response=False)
             
             # Get total file size if available
             total_size = int(response.headers.get('content-length', 0))
@@ -347,6 +391,7 @@ class ConferenceDownloader:
                         logging.info(f"Failed title filter: {title}")
 
                     if title_filter_pass:
+                        # TODO: need to avoid this repeated request, if abstract was already fetched
                         # get abstract from forum page
                         response_forum = self.make_request(forum_url)
                         soup_forum = BeautifulSoup(response_forum.text, 'html.parser')
@@ -492,7 +537,7 @@ def main():
         conferences = {
             # 'EMNLP': list(range(2023, 2025)),
             'NeurIPS': list(range(2023, 2025)),
-            'ACL': list(range(2023, 2025)),
+            # 'ACL': list(range(2023, 2025)),
             # 'ICML': list(range(2020, 2024)),
             # 'JMLR': list(range(2020, 2024))
         }
